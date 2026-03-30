@@ -9,6 +9,10 @@
 
 ## English
 
+> ⚠️ **Work in progress.** This project is under active development. Some pipeline stages, analyses, and documentation sections are incomplete or subject to change.
+
+> 🛠️ **Engineering philosophy.** Beyond the analytical goals, this project is built with a deliberate focus on **good programming practices and MLOps principles** — aiming for a pipeline that is reliable, reusable, maintainable, flexible, and fully reproducible. This includes modular code structure, version-controlled experiments, schema validation, automated testing, containerisation, and CI/CD-driven deployment.
+
 ### Business Case & Problem Statement
 
 Air pollution is the single largest environmental health risk in Europe, responsible for over **400,000 premature deaths per year** across the EU according to the European Environment Agency. Despite significant progress in reducing emissions over recent decades, pollutant concentrations still exceed both EU legal limits and the stricter WHO guidelines in many urban and industrial areas — particularly in Central and Eastern Europe, the Po Valley in Italy, and heavily trafficked Western European cities.
@@ -303,7 +307,11 @@ python dashboard/app.py
 
 ## Español
 
-### (Trabajo en curso) Caso de Negocio y Planteamiento del Problema
+> ⚠️ **Trabajo en curso.** Este proyecto está en desarrollo activo. Algunas fases del pipeline, análisis y secciones de documentación están incompletas o sujetas a cambios.
+
+> 🛠️ **Filosofía de ingeniería.** Más allá de los objetivos analíticos, este proyecto se construye con un enfoque deliberado en **buenas prácticas de programación y principios MLOps** — buscando un pipeline que sea fiable, reutilizable, mantenible, flexible y completamente reproducible. Esto incluye estructura de código modular, experimentos con control de versiones, validación de esquemas, tests automatizados, contenerización y despliegue mediante CI/CD.
+
+### Caso de Negocio y Planteamiento del Problema
 
 La contaminación del aire es el mayor riesgo ambiental para la salud en Europa, responsable de más de **400.000 muertes prematuras al año** en la UE según la Agencia Europea de Medio Ambiente. A pesar del progreso significativo en la reducción de emisiones, las concentraciones de contaminantes siguen superando tanto los límites legales de la UE como las directrices más estrictas de la OMS en muchas zonas urbanas e industriales — especialmente en Europa Central y del Este, el Valle del Po en Italia y las ciudades del oeste con alto tráfico.
 
@@ -392,6 +400,155 @@ Causal Forest estima efectos causales condicionales (CATE) por región NUTS3, es
 | CI/CD | GitHub Actions |
 | Deploy | Render.com (free tier) |
 
+
+---
+
+### Metodología
+
+**Fase 1 — Ingesta y Análisis Exploratorio**
+
+Los datos se descargan de forma programática desde el servicio de descarga de calidad del aire de la EEA, el Copernicus Climate Data Store (ERA5 vía `cdsapi`), EUROSTAT (vía el paquete Python `eurostat`) y la Base de Datos Europea de Mortalidad de la OMS. El EDA documenta cobertura de datos, patrones de valores ausentes, distribuciones, desbalanceo de clases, estructura estacional, correlaciones entre contaminantes y autocorrelación del PM2.5 por país. El EDA de salud cubre tendencias de mortalidad por causa, edad, país y estación.
+
+**Fase 2 — Procesamiento a Gran Escala con Apache Spark**
+
+Los jobs de PySpark gestionan la limpieza, la unión espacial (interpolación del grid ERA5 a las coordenadas de las estaciones EEA) y la ingeniería de features: lags de PM2.5 y co-contaminantes, ventanas móviles, variables de calendario, índices meteorológicos derivados, y uniones con datos de salud a granularidad semanal NUTS3. Las salidas son archivos Parquet particionados.
+
+**Fase 3 — Orquestación del Pipeline con Prefect**
+
+Todos los pasos están encapsulados en un flow de Prefect con gestión de dependencias, validaciones de esquema, lógica de reintentos con backoff exponencial y programación semanal. El pipeline funciona de forma incremental — solo se descargan los datos nuevos en cada ejecución. Un fichero flag activa el reentrenamiento del modelo únicamente cuando llegaron datos nuevos.
+
+**Fase 4 — Modelado Predictivo**
+
+Clasificación binaria (PM2.5 > 25 µg/m³ en t+1 y t+2) usando LightGBM (modelo principal), XGBoost (comparativo) y Regresión Logística (baseline interpretable). El umbral de decisión se ajusta para alcanzar un recall ≥ 90%. Los valores SHAP proporcionan interpretabilidad completa de las features. Un desglose del rendimiento por país identifica debilidades regionales.
+
+**Fase 5 — Inferencia Causal**
+
+Tres análisis causales usando `linearmodels` (DiD, IV) y `econml` (Causal Forest). Los análisis se implementan como notebooks independientes con documentación narrativa completa de supuestos, estrategia de identificación y verificaciones de robustez. Los resultados alimentan un endpoint `/health-impact` de la API que devuelve estimaciones causales de mortalidad y hospitalización junto con la alerta predictiva.
+
+**Fase 6 — Despliegue en Producción**
+
+Aplicación FastAPI contenerizada con Docker (build multi-stage, usuario no-root). CI/CD mediante GitHub Actions: tests en cada PR, despliegue automático a Render.com en cada push a main. Endpoints: `/predict`, `/predict/batch`, `/health-impact`, `/health`, `/metrics`.
+
+---
+
+### Estructura del Proyecto
+
+```
+eea-era5-air-quality-europe/
+├── data/                               # excluido de git (.gitignore)
+│   ├── raw/
+│   │   ├── eea/                        # Parquet verificado y no verificado
+│   │   ├── era5/                       # NetCDF por mes y año
+│   │   ├── eurostat/
+│   │   │   ├── demo_r_mweek3/          # mortalidad semanal por NUTS3
+│   │   │   ├── hlth_cd_aro/            # muertes por causa respiratoria/cardiovascular
+│   │   │   └── hlth_co_hospit/         # hospitalizaciones por causa
+│   │   └── who/                        # Base de Datos Europea de Mortalidad OMS
+│   └── processed/
+│       ├── eea/                        # EEA limpio y particionado
+│       ├── era5/                       # ERA5 limpio, reproyectado a estaciones EEA
+│       ├── health/                     # datos de mortalidad y hospitalización limpios
+│       ├── features/                   # feature store (input final para ML y causal)
+│       └── aggregations/               # resúmenes anuales por ciudad + KPIs de salud
+├── notebooks/
+│   ├── 01_eda.ipynb                    # EDA: contaminación, meteorología, salud
+│   ├── 02_feature_validation.ipynb     # QA del feature store + experimento rápido
+│   ├── 03_causal_did.ipynb             # DiD: episodios PM2.5 → mortalidad respiratoria
+│   ├── 04_causal_iv.ipynb              # IV: PM2.5 → hospitalizaciones cardiovasculares
+│   └── 05_causal_heterogeneity.ipynb   # Causal Forest: CATE por región, edad, estación
+├── src/
+│   ├── ingestion/
+│   │   ├── download_eea.py
+│   │   ├── download_era5.py
+│   │   ├── download_eurostat.py
+│   │   ├── download_who.py
+│   │   └── validate_downloads.py
+│   ├── spark/
+│   │   ├── spark_clean_eea.py
+│   │   ├── spark_clean_era5.py
+│   │   ├── spark_clean_health.py
+│   │   └── spark_join_features.py
+│   ├── causal/
+│   │   ├── did_analysis.py
+│   │   ├── iv_analysis.py
+│   │   └── heterogeneous_effects.py
+│   ├── model/
+│   │   ├── train.py
+│   │   └── evaluate.py
+│   └── pipeline/
+│       └── flow.py                     # DAG de Prefect
+├── api/
+│   └── main.py                         # Aplicación FastAPI
+├── dashboard/
+│   └── app.py                          # Dashboard Plotly Dash
+├── tests/
+│   └── test_api.py
+├── models/                             # artefactos del modelo guardados (excluidos de git)
+├── Dockerfile                          # imagen de producción para la API
+├── Dockerfile.pipeline                 # imagen del pipeline (Spark + Prefect)
+├── docker-compose.yml
+├── prefect.yaml
+├── requirements-ingestion.txt
+├── requirements-spark.txt
+├── requirements-model.txt
+├── requirements-causal.txt
+├── requirements-api.txt
+├── requirements-dashboard.txt
+└── requirements-pipeline.txt
+```
+
+---
+
+### Inicio Rápido
+
+```bash
+# 1. Instalar dependencias de ingesta
+pip install -r requirements-ingestion.txt
+
+# 2. Configurar acceso a ERA5 (configuración única)
+# Regístrate en https://cds.climate.copernicus.eu y guarda tu clave en ~/.cdsapirc
+
+# 3. Descargar datos (primero en modo dry-run para comprobar tamaños)
+python src/ingestion/download_eea.py --dry-run
+python src/ingestion/download_era5.py --dry-run
+python src/ingestion/download_eurostat.py --dry-run
+
+# 4. Descarga real
+python src/ingestion/download_eea.py
+python src/ingestion/download_era5.py
+python src/ingestion/download_eurostat.py
+python src/ingestion/download_who.py
+
+# 5. Validar descargas
+python src/ingestion/validate_downloads.py
+
+# 6. Ejecutar jobs de Spark
+pip install -r requirements-spark.txt
+spark-submit src/spark/spark_clean_eea.py
+spark-submit src/spark/spark_clean_era5.py
+spark-submit src/spark/spark_clean_health.py
+spark-submit src/spark/spark_join_features.py
+
+# 7. Entrenar modelos
+pip install -r requirements-model.txt
+python src/model/train.py
+python src/model/evaluate.py
+
+# 8. Ejecutar análisis causales (ver notebooks/ para documentación narrativa)
+pip install -r requirements-causal.txt
+jupyter notebook notebooks/03_causal_did.ipynb
+
+# 9. Ejecutar la API en local
+pip install -r requirements-api.txt
+uvicorn api.main:app --reload
+# Swagger UI → http://localhost:8000/docs
+
+# 10. Ejecutar el dashboard
+pip install -r requirements-dashboard.txt
+python dashboard/app.py
+# Dashboard → http://localhost:8050
+```
+
 ---
 
 ### Fuentes de Datos
@@ -404,6 +561,7 @@ Causal Forest estima efectos causales condicionales (CATE) por región NUTS3, es
 | 🇪🇺 EUROSTAT | Muertes por causa respiratoria/cardiovascular (`hlth_cd_aro`) | https://ec.europa.eu/eurostat |
 | 🇪🇺 EUROSTAT | Hospitalizaciones (`hlth_co_hospit`) | https://ec.europa.eu/eurostat |
 | 🇪🇺 WHO Europa | European Mortality Database | https://gateway.euro.who.int/en/datasets/european-mortality-database |
+
 
 ---
 
