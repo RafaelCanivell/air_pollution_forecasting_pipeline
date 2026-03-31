@@ -1,5 +1,5 @@
 # Air Quality & Public Health Impact Pipeline — EEA + ERA5 + EUROSTAT
-### *Predicting dangerous pollution events and estimating their causal effect on respiratory & cardiovascular mortality across Europe*
+### *Predicting dangerous pollution events and estimating their causal effect on respiratory & cardiovascular mortality — France, Spain, Belgium, Netherlands & Germany*
 
 ---
 
@@ -9,19 +9,50 @@
 
 ## English
 
-> ⚠️ **Work in progress.** This project is under active development. Some pipeline stages, analyses, and documentation sections are incomplete or subject to change.
+> **Work in progress.** This project is under active development. Some pipeline stages, analyses, and documentation sections are incomplete or subject to change.
 
-> 🛠️ **Engineering philosophy.** Beyond the analytical goals, this project is built with a deliberate focus on **good programming practices and MLOps principles** — aiming for a pipeline that is reliable, reusable, maintainable, flexible, and fully reproducible. This includes modular code structure, version-controlled experiments, schema validation, automated testing, containerisation, and CI/CD-driven deployment.
+> **Engineering philosophy.** Beyond the analytical goals, this project is built with a deliberate focus on *good programming practices and MLOps principles* — aiming for a pipeline that is reliable, reusable, maintainable, flexible, and fully reproducible. This includes modular code structure, version-controlled experiments, schema validation, automated testing, containerisation, and CI/CD-driven deployment.
 
 ### Business Case & Problem Statement
 
-Air pollution is the single largest environmental health risk in Europe, responsible for over **400,000 premature deaths per year** across the EU according to the European Environment Agency. Despite significant progress in reducing emissions over recent decades, pollutant concentrations still exceed both EU legal limits and the stricter WHO guidelines in many urban and industrial areas — particularly in Central and Eastern Europe, the Po Valley in Italy, and heavily trafficked Western European cities.
+Air pollution is the single largest environmental health risk in Europe, responsible for over <u>*400,000 premature deaths per year*</u> across the EU according to the European Environment Agency. Despite significant progress in reducing emissions over recent decades, pollutant concentrations still exceed both EU legal limits and the stricter WHO guidelines in many urban and industrial areas.
 
 The economic cost is equally severe: lost working days, hospital admissions, and long-term chronic disease place hundreds of billions of euros of pressure on European healthcare systems annually, with the burden falling disproportionately on lower-income populations living near industrial zones, highways, and ports.
 
-Despite the availability of dense monitoring networks, most public-facing tools offer only *current* air quality readings — they do not **predict** when conditions will become dangerous, nor do they **quantify** the downstream health burden those conditions cause. A 24 to 48-hour advance warning of a high-pollution event allows individuals, hospitals, and municipal governments to take preventive action: issuing health advisories, adjusting industrial operations, activating low-emission zones, or simply advising vulnerable populations to stay indoors.
+Despite the availability of dense monitoring networks, most public-facing tools offer only *current* air quality readings — they do not *predict* when conditions will become dangerous, nor do they *quantify* the downstream health burden those conditions cause. A 24 to 48-hour advance warning of a high-pollution event allows individuals, hospitals, and municipal governments to take preventive action: issuing health advisories, adjusting industrial operations, activating low-emission zones, or simply advising vulnerable populations to stay indoors.
 
-This project addresses both gaps by building an **end-to-end machine learning and causal inference pipeline** that ingests historical atmospheric, pollution, and health data across Europe, engineers predictive features at scale, estimates the causal effect of pollution on mortality and hospitalizations, and serves real-time forecasts through a production-grade API.
+This project addresses both gaps by building an *end-to-end machine learning and causal inference pipeline* that ingests historical atmospheric, pollution, and health data across Europe, engineers predictive features at scale, estimates the causal effect of pollution on mortality and hospitalizations, and serves real-time forecasts through a production-grade API.
+
+---
+
+### Geographic Scope & Design Rationale
+
+The pipeline covers five countries: **France, Spain, Belgium, the Netherlands, and Germany**, over a **five-year period (2019–2023)**.
+
+**Why these five countries?**
+
+This selection is the result of a deliberate trade-off between analytical richness, computational feasibility, and causal identification power.
+
+At one extreme, a single small country (e.g. Belgium alone) would be computationally trivial but analytically weak: too few NUTS3 regions for credible DiD control groups, limited geographic heterogeneity for the Causal Forest, and no transboundary pollution signal. At the other extreme, all of Europe would maximise statistical power but require cloud infrastructure (Databricks, EMR) and download volumes in the hundreds of gigabytes — unnecessary for a focused research pipeline.
+
+The five-country scope hits the optimal point:
+
+| Criterion | Single country | 5-country scope | All Europe |
+|---|---|---|---|
+| Estimated EEA stations | ~70 | ~1,000–1,200 | ~5,000+ |
+| Estimated daily rows (5 years) | ~130K | ~2M | ~100M+ |
+| Pandas sufficient? | ✅ | ✅ (borderline) | ❌ |
+| Spark justified? | ❌ overkill | ✅ demonstrable | ✅ necessary |
+| DiD control groups | ⚠️ few | ✅ rich | ✅ rich |
+| Transboundary pollution signal | ❌ | ✅ | ✅ |
+
+**Why Spark at ~2M rows?**
+
+At 2 million rows, pandas is technically sufficient. Spark is retained for two explicit reasons: (1) it demonstrates production-grade data engineering skills, which is part of the project's purpose; and (2) the pipeline is designed to scale — adding more countries or years requires only a configuration change, not a rewrite. A note to this effect is more intellectually honest than pretending Spark is strictly necessary at this scale.
+
+**Why these specific countries?**
+
+France, Spain, Belgium, the Netherlands, and Germany form a geographically coherent bloc with documented transboundary pollution interactions — industrial emissions from the Rhine-Ruhr valley affect Belgium and the Netherlands; Saharan dust episodes affect Spain and France simultaneously. This cross-border structure is exactly what the DiD and IV analyses need to identify causal effects that go beyond what within-country variation alone could support.
 
 ---
 
@@ -31,13 +62,13 @@ These three data sources are individually powerful but tell incomplete stories o
 
 **EEA Air Quality e-Reporting** provides ground-level measurements of five key pollutants — PM2.5, PM10, ozone (O₃), nitrogen dioxide (NO₂), and sulphur dioxide (SO₂) — collected from thousands of official monitoring stations across all EU member states and several neighboring countries. It tells us *what the air contains*, but not *why* conditions changed, *what will happen next*, or *how many people will be harmed*.
 
-**ERA5 (Copernicus/ECMWF)** is the European reference for atmospheric reanalysis, providing continuous gridded data — temperature, wind speed, humidity, atmospheric pressure, and boundary layer height — at 0.25° resolution from 1940 to present. It tells us about the *atmospheric conditions* that drive pollutant behavior: temperature inversions that trap particles near the ground, wind patterns that disperse or concentrate pollutants across national borders, and precipitation events that temporarily clean the air. As a 100% European dataset produced by the European Centre for Medium-Range Weather Forecasts, it replaces NOAA GHCN entirely and offers superior spatial coverage through a uniform grid rather than sparse station networks.
+**ERA5 (Copernicus/ECMWF)** is the European reference for atmospheric reanalysis, providing continuous gridded data — temperature, wind speed, humidity, atmospheric pressure, and boundary layer height — at 0.25° resolution from 1940 to present. It tells us about the *atmospheric conditions* that drive pollutant behavior: temperature inversions that trap particles near the ground, wind patterns that disperse or concentrate pollutants across national borders, and precipitation events that temporarily clean the air. As a 100% European dataset produced by the European Centre for Medium-Range Weather Forecasts.
 
 **EUROSTAT and WHO European Mortality Database** provide the health outcome layer: weekly mortality by cause, age, and NUTS3 region, and hospital admissions for respiratory and cardiovascular conditions. They tell us *how many people were harmed* — the outcome that gives the entire pipeline its public health meaning.
 
 Combining all three allows the pipeline to both predict dangerous pollution events and rigorously estimate their causal downstream effects on human health.
 
-The transboundary nature of European air pollution — where industrial emissions from one country affect air quality in neighboring ones — makes the multi-country, multi-source approach especially relevant. This is also what justifies Apache Spark: the combined historical dataset spans decades, dozens of countries, and hundreds of millions of records that do not fit comfortably in memory.
+The transboundary nature of European air pollution — where industrial emissions from one country affect air quality in neighboring ones — makes the multi-country, multi-source approach especially relevant. This is also what justifies Apache Spark: while ~2M rows at this geographic scope could technically be handled by pandas, Spark is retained deliberately to demonstrate production-grade data engineering and to ensure the pipeline scales without rewriting if the scope expands (see Geographic Scope & Design Rationale above).
 
 ---
 
@@ -161,6 +192,7 @@ FastAPI application containerised with Docker (multi-stage build, non-root user)
 | Ingestion — health | Python, `eurostat` package, `requests` (WHO) |
 | Processing | Apache Spark (PySpark), `xarray` (NetCDF → Parquet) |
 | Orchestration | Prefect |
+| Experiment tracking | MLflow — logs hyperparameters, metrics, and model artefacts for every training run |
 | Modeling | LightGBM, XGBoost, scikit-learn, SHAP |
 | Causal inference | EconML, DoWhy, `linearmodels` |
 | Visualization | Plotly Dash |
@@ -168,6 +200,32 @@ FastAPI application containerised with Docker (multi-stage build, non-root user)
 | Containerization | Docker |
 | CI/CD | GitHub Actions |
 | Deploy | Render.com (free tier) |
+
+---
+
+### Visualisation
+
+**Development — Interactive Dashboard (`dashboard/app.py`)**
+
+A Plotly Dash application intended for exploratory analysis, internal communication of results, and demos. It is not part of the production deployment. Three panels:
+
+- *Europe map*: PM2.5 exceedance days by NUTS3 region with a time slider, showing where and when dangerous pollution events concentrate across the continent.
+- *Prediction panel*: observed vs predicted PM2.5 for a selected monitoring station, t+1/t+2 alert probability, and a SHAP bar chart explaining which features are driving the current prediction.
+- *Causal panel*: CATE choropleth map of health impact by region, DiD event-study plots (treated vs control regions around pollution episodes), and IV estimates with confidence intervals by country.
+
+> A `06_results_visualization.ipynb` notebook covering static model outputs (ROC curves, calibration plots, SHAP summary plots) is planned for reproducible offline review.
+
+**Production — REST API (`api/main.py`)**
+
+The only production-facing surface. A FastAPI application containerised with Docker, deployed via CI/CD to Render.com, and designed for integration with external systems (hospitals, municipal governments, monitoring platforms). Endpoints:
+
+| Endpoint | Description |
+|---|---|
+| `POST /predict` | PM2.5 exceedance probability at t+1 and t+2 for a single station |
+| `POST /predict/batch` | Same for multiple stations in one call |
+| `GET /health-impact` | Causal estimate of additional deaths and hospitalisations given a pollution episode |
+| `GET /metrics` | Live model performance metrics (recall, precision, prediction volume) |
+| `GET /health` | Service health check |
 
 ---
 
@@ -197,32 +255,36 @@ eea-era5-air-quality-europe/
 │   ├── 04_causal_iv.ipynb              # IV: PM2.5 → cardiovascular hospitalizations
 │   └── 05_causal_heterogeneity.ipynb   # Causal Forest: CATE by region, age, season
 ├── src/
+│   ├── utils/                              # shared helpers — imported by every module
+│   │   ├── paths.py                        # single source of truth for all filesystem paths — change here, change everywhere
+│   │   ├── logging_config.py               # logger configured once, imported across all modules — avoids duplicate handlers
+│   │   └── retry.py                        # reusable exponential-backoff decorator — EEA and ERA5 endpoints fail transiently
 │   ├── ingestion/
-│   │   ├── download_eea.py
-│   │   ├── download_era5.py
-│   │   ├── download_eurostat.py
-│   │   ├── download_who.py
-│   │   └── validate_downloads.py
+│   │   ├── download_eea.py                 # downloads PM2.5/PM10/NO2/O3/SO2 Parquet files from EEA bulk service
+│   │   ├── download_era5.py                # requests monthly NetCDF files from Copernicus CDS (temperature, wind, BLH…)
+│   │   ├── download_eurostat.py            # fetches three health outcome tables via the eurostat Python package
+│   │   ├── download_who.py                 # downloads WHO European Mortality Database ZIP and extracts CSVs
+│   │   └── validate_downloads.py           # schema + size checks; writes flag files that gate the Spark jobs
 │   ├── spark/
-│   │   ├── spark_clean_eea.py
-│   │   ├── spark_clean_era5.py
-│   │   ├── spark_clean_health.py
-│   │   └── spark_join_features.py
+│   │   ├── spark_clean_eea.py              # cleans and repartitions EEA Parquet by country and year
+│   │   ├── spark_clean_era5.py             # converts NetCDF → Parquet and interpolates ERA5 grid to EEA station coords
+│   │   ├── spark_clean_health.py           # harmonises EUROSTAT and WHO mortality/hospitalisation tables
+│   │   └── spark_join_features.py          # joins all sources into the final feature store (ML + causal input)
 │   ├── causal/
-│   │   ├── did_analysis.py
-│   │   ├── iv_analysis.py
-│   │   └── heterogeneous_effects.py
+│   │   ├── did_analysis.py                 # Difference-in-Differences: PM2.5 episodes → respiratory mortality
+│   │   ├── iv_analysis.py                  # Instrumental Variables: boundary layer height as instrument for PM2.5
+│   │   └── heterogeneous_effects.py        # Causal Forest (EconML): CATE by region, season, and age group
 │   ├── model/
-│   │   ├── train.py
-│   │   └── evaluate.py
+│   │   ├── train.py                        # trains LightGBM and XGBoost classifiers; logs runs to MLflow
+│   │   └── evaluate.py                     # threshold tuning, recall/precision curves, SHAP values, country breakdown
 │   └── pipeline/
-│       └── flow.py                     # Prefect DAG
+│       └── flow.py                         # Prefect DAG — wires all tasks, manages flags, schedules weekly retraining
 ├── api/
-│   └── main.py                         # FastAPI application
+│   └── main.py                             # FastAPI app — /predict, /predict/batch, /health-impact, /metrics endpoints
 ├── dashboard/
-│   └── app.py                          # Plotly Dash dashboard
+│   └── app.py                              # Plotly Dash — Europe-wide PM2.5 trends, mortality maps, model performance
 ├── tests/
-│   └── test_api.py
+│   └── test_api.py                         # API integration tests run on every PR via GitHub Actions
 ├── models/                             # saved model artifacts (excluded from git)
 ├── Dockerfile                          # API production image
 ├── Dockerfile.pipeline                 # Pipeline image (Spark + Prefect)
@@ -295,39 +357,72 @@ python dashboard/app.py
 
 | Source | Dataset | URL |
 |---|---|---|
-| 🇪🇺 EEA | Air Quality e-Reporting | https://www.eea.europa.eu/en/datahub/datahubitem-view/778ef9f5-6293-4846-badd-56a29c70880d |
-| 🇪🇺 Copernicus/ECMWF | ERA5 Reanalysis | https://cds.climate.copernicus.eu |
-| 🇪🇺 EUROSTAT | Weekly mortality by NUTS3 (`demo_r_mweek3`) | https://ec.europa.eu/eurostat |
-| 🇪🇺 EUROSTAT | Deaths by respiratory/cardiovascular cause (`hlth_cd_aro`) | https://ec.europa.eu/eurostat |
-| 🇪🇺 EUROSTAT | Hospital admissions (`hlth_co_hospit`) | https://ec.europa.eu/eurostat |
-| 🇪🇺 WHO Europa | European Mortality Database | https://gateway.euro.who.int/en/datasets/european-mortality-database |
+|  EEA | Air Quality e-Reporting | https://www.eea.europa.eu/en/datahub/datahubitem-view/778ef9f5-6293-4846-badd-56a29c70880d |
+|  Copernicus/ECMWF | ERA5 Reanalysis | https://cds.climate.copernicus.eu |
+|  EUROSTAT | Weekly mortality by NUTS3 (`demo_r_mweek3`) | https://ec.europa.eu/eurostat |
+|  EUROSTAT | Deaths by respiratory/cardiovascular cause (`hlth_cd_aro`) | https://ec.europa.eu/eurostat |
+|  EUROSTAT | Hospital admissions (`hlth_co_hospit`) | https://ec.europa.eu/eurostat |
+|  WHO Europa | European Mortality Database | https://gateway.euro.who.int/en/datasets/european-mortality-database |
 
 ---
 ---
 
 ## Español
 
-> ⚠️ **Trabajo en curso.** Este proyecto está en desarrollo activo. Algunas fases del pipeline, análisis y secciones de documentación están incompletas o sujetas a cambios.
+> **Proyecto en curso.** Este proyecto está en desarrollo activo. Algunas fases del pipeline, análisis y secciones de documentación están incompletas o sujetas a cambios.
 
-> 🛠️ **Filosofía de ingeniería.** Más allá de los objetivos analíticos, este proyecto se construye con un enfoque deliberado en **buenas prácticas de programación y principios MLOps** — buscando un pipeline que sea fiable, reutilizable, mantenible, flexible y completamente reproducible. Esto incluye estructura de código modular, experimentos con control de versiones, validación de esquemas, tests automatizados, contenerización y despliegue mediante CI/CD.
+> **Filosofía de ingeniería.** Más allá de los objetivos analíticos, este proyecto se construye con un enfoque deliberado en *buenas prácticas de programación y principios MLOps* — buscando un pipeline que sea fiable, reutilizable, mantenible, flexible y completamente reproducible. Esto incluye estructura de código modular, experimentos con control de versiones, validación de esquemas, tests automatizados, contenerización y despliegue mediante CI/CD.
 
 ### Caso de Negocio y Planteamiento del Problema
 
-La contaminación del aire es el mayor riesgo ambiental para la salud en Europa, responsable de más de **400.000 muertes prematuras al año** en la UE según la Agencia Europea de Medio Ambiente. A pesar del progreso significativo en la reducción de emisiones, las concentraciones de contaminantes siguen superando tanto los límites legales de la UE como las directrices más estrictas de la OMS en muchas zonas urbanas e industriales — especialmente en Europa Central y del Este, el Valle del Po en Italia y las ciudades del oeste con alto tráfico.
+La contaminación del aire es el mayor riesgo ambiental para la salud en Europa, responsable de más de <u>*400.000 muertes prematuras al año*</u> en la UE según la Agencia Europea de Medio Ambiente. A pesar del progreso significativo en la reducción de emisiones, las concentraciones de contaminantes siguen superando tanto los límites legales de la UE como las directrices más estrictas de la OMS en muchas zonas urbanas e industriales — especialmente en Europa Central y del Este, el Valle del Po en Italia y las ciudades del oeste con alto tráfico.
 
-La mayoría de las herramientas públicas solo ofrecen lecturas *actuales* de calidad del aire — no **predicen** cuándo las condiciones se volverán peligrosas, ni **cuantifican** la carga sanitaria que esas condiciones generan. Un aviso de 24 a 48 horas antes de un evento de alta contaminación permite a personas, hospitales y gobiernos municipales tomar medidas preventivas: emitir alertas sanitarias, ajustar operaciones industriales, activar zonas de bajas emisiones, o simplemente indicar a poblaciones vulnerables que permanezcan en interiores.
+La mayoría de las herramientas públicas solo ofrecen lecturas *actuales* de calidad del aire — no *predicen* cuándo las condiciones se volverán peligrosas, ni *cuantifican* la carga sanitaria que esas condiciones generan. Un aviso de 24 a 48 horas antes de un evento de alta contaminación permite a personas, hospitales y gobiernos municipales tomar medidas preventivas: emitir alertas sanitarias, ajustar operaciones industriales, activar zonas de bajas emisiones, o simplemente indicar a poblaciones vulnerables que permanezcan en interiores.
 
-Este proyecto aborda ambas brechas construyendo un **pipeline end-to-end de machine learning e inferencia causal** que ingesta datos históricos atmosféricos, de contaminación y de salud a escala europea, genera features predictivas a gran escala, estima el efecto causal de la contaminación sobre la mortalidad y hospitalizaciones, y sirve predicciones en tiempo real a través de una API lista para producción.
+Este proyecto aborda ambas brechas construyendo un *pipeline end-to-end de machine learning e inferencia causal* que ingesta datos históricos atmosféricos, de contaminación y de salud a escala europea, genera features predictivas a gran escala, estima el efecto causal de la contaminación sobre la mortalidad y hospitalizaciones, y sirve predicciones en tiempo real a través de una API lista para producción.
+
+---
+
+### Ámbito Geográfico y Justificación del Diseño
+
+El pipeline cubre cinco países: **Francia, España, Bélgica, Países Bajos y Alemania**, durante un **periodo de cinco años (2019–2023)**.
+
+**¿Por qué estos cinco países?**
+
+Esta selección es el resultado de un compromiso deliberado entre riqueza analítica, viabilidad computacional y potencia de identificación causal.
+
+En un extremo, un único país pequeño (por ejemplo, solo Bélgica) sería trivial computacionalmente pero débil analíticamente: demasiado pocas regiones NUTS3 para grupos de control DiD creíbles, heterogeneidad geográfica limitada para el Causal Forest, y sin señal de contaminación transfronteriza. En el otro extremo, toda Europa maximizaría la potencia estadística pero requeriría infraestructura cloud (Databricks, EMR) y volúmenes de descarga de cientos de gigabytes — innecesario para un pipeline de investigación enfocado.
+
+El ámbito de cinco países alcanza el punto óptimo:
+
+| Criterio | Un país | 5 países | Europa completa |
+|---|---|---|---|
+| Estaciones EEA estimadas | ~70 | ~1.000–1.200 | ~5.000+ |
+| Filas diarias estimadas (5 años) | ~130K | ~2M | ~100M+ |
+| ¿Pandas suficiente? | ✅ | ✅ (al límite) | ❌ |
+| ¿Spark justificado? | ❌ excesivo | ✅ demostrable | ✅ necesario |
+| Grupos de control DiD | ⚠️ pocos | ✅ ricos | ✅ ricos |
+| Señal de contaminación transfronteriza | ❌ | ✅ | ✅ |
+
+**¿Por qué Spark con ~2M filas?**
+
+Con 2 millones de filas, pandas es técnicamente suficiente. Spark se mantiene por dos razones explícitas: (1) demuestra capacidades de ingeniería de datos a escala de producción, que forma parte del propósito del proyecto; y (2) el pipeline está diseñado para escalar — añadir más países o años requiere solo un cambio de configuración, no una reescritura. Reconocer esto explícitamente es más honesto intelectualmente que pretender que Spark es estrictamente necesario a esta escala.
+
+**¿Por qué estos países concretos?**
+
+Francia, España, Bélgica, Países Bajos y Alemania forman un bloque geográficamente coherente con interacciones de contaminación transfronteriza documentadas — las emisiones industriales del valle del Rin-Ruhr afectan a Bélgica y Países Bajos; los episodios de polvo del Sáhara afectan simultáneamente a España y Francia. Esta estructura transfronteriza es exactamente lo que los análisis DiD e IV necesitan para identificar efectos causales que vayan más allá de lo que la variación dentro de un solo país podría sustentar.
 
 ---
 
 ### ¿Por Qué Combinar EEA, ERA5 y Datos de Salud?
 
-**EEA Air Quality e-Reporting** nos dice *qué contiene el aire* — niveles de PM2.5, PM10, O₃, NO₂ y SO₂ — pero no *por qué cambiaron las condiciones*, *qué pasará después*, ni *cuántas personas serán dañadas*.
+**EEA Air Quality e-Reporting** nos dice *qué contiene el aire* — niveles de PM2.5, PM10, O₃, NO₂ y SO₂ — pero no *por qué cambiaron las condiciones*, *qué pasará después*, ni *cuántas personas serán afectadas*.
 
-**ERA5 (Copernicus/ECMWF)** es la referencia europea para el reanálisis atmosférico, proporcionando datos en grid continuo — temperatura, velocidad del viento, humedad, presión y altura de la capa límite — a resolución de 0,25° desde 1940. Nos habla de las *condiciones atmosféricas* que determinan el comportamiento de los contaminantes: inversiones térmicas que atrapan partículas cerca del suelo, patrones de viento que dispersan o concentran contaminantes a través de fronteras, y precipitaciones que limpian temporalmente el aire. Como dataset 100% europeo producido por el Centro Europeo de Predicción Meteorológica a Plazo Medio, reemplaza completamente a NOAA GHCN y ofrece cobertura espacial superior mediante un grid uniforme.
+**ERA5 (Copernicus/ECMWF)** es la referencia europea para el reanálisis atmosférico, proporcionando datos en grid continuo — temperatura, velocidad del viento, humedad, presión y altura de la capa límite — a resolución de 0,25° desde 1940. Nos habla de las *condiciones atmosféricas* que determinan el comportamiento de los contaminantes: inversiones térmicas que atrapan partículas cerca del suelo, patrones de viento que dispersan o concentran contaminantes a través de fronteras, y precipitaciones que limpian temporalmente el aire. Como dataset 100% europeo producido por el Centro Europeo de Predicción Meteorológica a Plazo Medio.
 
 **EUROSTAT y la Base de Datos Europea de Mortalidad de la OMS** aportan la capa de resultados sanitarios: mortalidad semanal por causa, edad y región NUTS3, y hospitalizaciones por enfermedades respiratorias y cardiovasculares. Nos dicen *cuántas personas fueron dañadas* — el resultado que otorga al pipeline todo su significado de salud pública.
+
+La naturaleza transfronteriza de la contaminación del aire europea — donde las emisiones industriales de un país afectan la calidad del aire de los países vecinos — hace que el enfoque multipaís y multifuente sea especialmente relevante. Esto también justifica el uso de Apache Spark: aunque ~2M filas en este ámbito geográfico podrían manejarse técnicamente con pandas, Spark se mantiene deliberadamente para demostrar ingeniería de datos a escala de producción y garantizar que el pipeline escale sin reescritura si el ámbito se amplía (ver Ámbito Geográfico y Justificación del Diseño).
 
 ---
 
@@ -392,6 +487,7 @@ Causal Forest estima efectos causales condicionales (CATE) por región NUTS3, es
 | Ingesta — salud | Python, `eurostat` package, `requests` (WHO) |
 | Procesamiento | Apache Spark (PySpark), `xarray` (NetCDF → Parquet) |
 | Orquestación | Prefect |
+| Seguimiento de experimentos | MLflow — registra hiperparámetros, métricas y artefactos del modelo en cada ejecución de entrenamiento |
 | Modelado | LightGBM, XGBoost, scikit-learn, SHAP |
 | Inferencia causal | EconML, DoWhy, `linearmodels` |
 | Visualización | Plotly Dash |
@@ -400,6 +496,44 @@ Causal Forest estima efectos causales condicionales (CATE) por región NUTS3, es
 | CI/CD | GitHub Actions |
 | Deploy | Render.com (free tier) |
 
+---
+
+### Visualización
+
+**Desarrollo — Dashboard Interactivo (`dashboard/app.py`)**
+
+Aplicación Plotly Dash destinada a exploración analítica, comunicación interna de resultados y demos. No forma parte del despliegue en producción. Tres paneles:
+
+- *Mapa de Europa*: días de excedencia de PM2.5 por región NUTS3 con slider temporal, mostrando dónde y cuándo se concentran los episodios de contaminación peligrosa en el continente.
+- *Panel predictivo*: PM2.5 real vs predicho para una estación seleccionada, probabilidad de alerta a t+1/t+2, y gráfico SHAP de barras que explica qué features están impulsando la predicción actual.
+- *Panel causal*: mapa coropleta de CATE del impacto sanitario por región, gráficos de estudio de eventos DiD (regiones tratadas vs control alrededor de episodios de contaminación), y estimaciones IV con intervalos de confianza por país.
+
+> Un notebook `06_results_visualization.ipynb` con outputs estáticos del modelo (curvas ROC, gráficos de calibración, SHAP summary plots) está planificado para revisión offline reproducible.
+
+**Producción — API REST (`api/main.py`)**
+
+La única superficie orientada a producción. Aplicación FastAPI contenerizada con Docker, desplegada mediante CI/CD en Render.com, y diseñada para integración con sistemas externos (hospitales, gobiernos municipales, plataformas de monitoreo). Endpoints:
+
+| Endpoint | Descripción |
+|---|---|
+| `POST /predict` | Probabilidad de excedencia de PM2.5 a t+1 y t+2 para una estación |
+| `POST /predict/batch` | Lo mismo para múltiples estaciones en una sola llamada |
+| `GET /health-impact` | Estimación causal de muertes y hospitalizaciones adicionales dado un episodio de contaminación |
+| `GET /metrics` | Métricas de rendimiento del modelo en tiempo real (recall, precisión, volumen de predicciones) |
+| `GET /health` | Health check del servicio |
+
+---
+
+### Fuentes de Datos
+
+| Fuente | Dataset | URL |
+|---|---|---|
+|  EEA | Air Quality e-Reporting | https://www.eea.europa.eu/en/datahub/datahubitem-view/778ef9f5-6293-4846-badd-56a29c70880d |
+|  Copernicus/ECMWF | ERA5 Reanalysis | https://cds.climate.copernicus.eu |
+|  EUROSTAT | Mortalidad semanal NUTS3 (`demo_r_mweek3`) | https://ec.europa.eu/eurostat |
+|  EUROSTAT | Muertes por causa respiratoria/cardiovascular (`hlth_cd_aro`) | https://ec.europa.eu/eurostat |
+|  EUROSTAT | Hospitalizaciones (`hlth_co_hospit`) | https://ec.europa.eu/eurostat |
+|  WHO Europa | European Mortality Database | https://gateway.euro.who.int/en/datasets/european-mortality-database |
 
 ---
 
@@ -457,32 +591,36 @@ eea-era5-air-quality-europe/
 │   ├── 04_causal_iv.ipynb              # IV: PM2.5 → hospitalizaciones cardiovasculares
 │   └── 05_causal_heterogeneity.ipynb   # Causal Forest: CATE por región, edad, estación
 ├── src/
+│   ├── utils/                              # utilidades compartidas — importadas por todos los módulos
+│   │   ├── paths.py                        # fuente única de verdad para todas las rutas — se cambia aquí, se cambia en todo
+│   │   ├── logging_config.py               # logger configurado una vez, importado en todos los módulos — evita handlers duplicados
+│   │   └── retry.py                        # decorador de reintentos con backoff exponencial — los endpoints de EEA y ERA5 fallan de forma transitoria
 │   ├── ingestion/
-│   │   ├── download_eea.py
-│   │   ├── download_era5.py
-│   │   ├── download_eurostat.py
-│   │   ├── download_who.py
-│   │   └── validate_downloads.py
+│   │   ├── download_eea.py                 # descarga archivos Parquet de PM2.5/PM10/NO2/O3/SO2 desde el servicio bulk de la EEA
+│   │   ├── download_era5.py                # solicita archivos NetCDF mensuales al CDS de Copernicus (temperatura, viento, BLH…)
+│   │   ├── download_eurostat.py            # obtiene tres tablas de resultados sanitarios via el paquete Python eurostat
+│   │   ├── download_who.py                 # descarga el ZIP de la Base de Datos de Mortalidad de la OMS y extrae los CSV
+│   │   └── validate_downloads.py           # comprobaciones de esquema y tamaño; escribe flag files que bloquean los jobs de Spark
 │   ├── spark/
-│   │   ├── spark_clean_eea.py
-│   │   ├── spark_clean_era5.py
-│   │   ├── spark_clean_health.py
-│   │   └── spark_join_features.py
+│   │   ├── spark_clean_eea.py              # limpia y reparticiona los Parquet de EEA por país y año
+│   │   ├── spark_clean_era5.py             # convierte NetCDF → Parquet e interpola el grid ERA5 a coordenadas de estaciones EEA
+│   │   ├── spark_clean_health.py           # armoniza las tablas de mortalidad/hospitalización de EUROSTAT y OMS
+│   │   └── spark_join_features.py          # une todas las fuentes en el feature store final (input para ML y causal)
 │   ├── causal/
-│   │   ├── did_analysis.py
-│   │   ├── iv_analysis.py
-│   │   └── heterogeneous_effects.py
+│   │   ├── did_analysis.py                 # Diferencias en Diferencias: episodios PM2.5 → mortalidad respiratoria
+│   │   ├── iv_analysis.py                  # Variables Instrumentales: altura de capa límite como instrumento para PM2.5
+│   │   └── heterogeneous_effects.py        # Causal Forest (EconML): CATE por región, estación y grupo de edad
 │   ├── model/
-│   │   ├── train.py
-│   │   └── evaluate.py
+│   │   ├── train.py                        # entrena clasificadores LightGBM y XGBoost; registra ejecuciones en MLflow
+│   │   └── evaluate.py                     # ajuste de umbral, curvas recall/precisión, valores SHAP, desglose por país
 │   └── pipeline/
-│       └── flow.py                     # DAG de Prefect
+│       └── flow.py                         # DAG de Prefect — conecta todas las tareas, gestiona flags, programa reentrenamiento semanal
 ├── api/
-│   └── main.py                         # Aplicación FastAPI
+│   └── main.py                             # app FastAPI — endpoints /predict, /predict/batch, /health-impact, /metrics
 ├── dashboard/
-│   └── app.py                          # Dashboard Plotly Dash
+│   └── app.py                              # Plotly Dash — tendencias PM2.5 en Europa, mapas de mortalidad, rendimiento del modelo
 ├── tests/
-│   └── test_api.py
+│   └── test_api.py                         # tests de integración de la API, ejecutados en cada PR via GitHub Actions
 ├── models/                             # artefactos del modelo guardados (excluidos de git)
 ├── Dockerfile                          # imagen de producción para la API
 ├── Dockerfile.pipeline                 # imagen del pipeline (Spark + Prefect)
@@ -548,20 +686,6 @@ pip install -r requirements-dashboard.txt
 python dashboard/app.py
 # Dashboard → http://localhost:8050
 ```
-
----
-
-### Fuentes de Datos
-
-| Fuente | Dataset | URL |
-|---|---|---|
-| 🇪🇺 EEA | Air Quality e-Reporting | https://www.eea.europa.eu/en/datahub/datahubitem-view/778ef9f5-6293-4846-badd-56a29c70880d |
-| 🇪🇺 Copernicus/ECMWF | ERA5 Reanalysis | https://cds.climate.copernicus.eu |
-| 🇪🇺 EUROSTAT | Mortalidad semanal NUTS3 (`demo_r_mweek3`) | https://ec.europa.eu/eurostat |
-| 🇪🇺 EUROSTAT | Muertes por causa respiratoria/cardiovascular (`hlth_cd_aro`) | https://ec.europa.eu/eurostat |
-| 🇪🇺 EUROSTAT | Hospitalizaciones (`hlth_co_hospit`) | https://ec.europa.eu/eurostat |
-| 🇪🇺 WHO Europa | European Mortality Database | https://gateway.euro.who.int/en/datasets/european-mortality-database |
-
 
 ---
 
