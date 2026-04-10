@@ -48,7 +48,7 @@ The five-country scope hits the optimal point:
 
 **Why Spark at ~2M rows?**
 
-At 2 million rows, pandas is technically sufficient. Spark is retained for two explicit reasons: (1) it demonstrates production-grade data engineering skills, which is part of the project's purpose; and (2) the pipeline is designed to scale — adding more countries or years requires only a configuration change, not a rewrite. A note to this effect is more intellectually honest than pretending Spark is strictly necessary at this scale.
+At 2 million rows, pandas is technically sufficient. Spark is retained for two explicit reasons: (1) it demonstrates production-grade data engineering skills, which is part of the project's purpose; and (2) the pipeline is designed to scale — adding more countries or years requires only a configuration change, not a rewrite. A `--engine pandas` flag is available in all Spark jobs for local development without Spark overhead.
 
 **Why these specific countries?**
 
@@ -75,6 +75,8 @@ The transboundary nature of European air pollution — where industrial emission
 ### Why PM2.5 as the Prediction Target?
 
 The pipeline downloads and processes all five EEA pollutants — PM2.5, PM10, NO₂, O₃, and SO₂. In the modelling phase, **PM2.5 is chosen as the primary prediction target**, but the other four pollutants are retained as input features rather than discarded. This is a deliberate design choice grounded in both epidemiology and machine learning.
+
+**Threshold definition:** PM2.5 exceedance is defined as **> 25 µg/m³** (EU daily limit value). A secondary sensitivity analysis using the stricter WHO guideline of 15 µg/m³ is available in `notebooks/02_feature_validation.ipynb`.
 
 **PM2.5 as target — the public health case:**
 
@@ -117,6 +119,10 @@ Using NUTS3 regions that exceed the PM2.5 threshold as the treated group and com
 
 Boundary layer height from ERA5 serves as the instrument: temperature inversions trap pollutants near the ground (strongly affecting PM2.5 levels) without directly affecting cardiovascular health through any channel other than pollution. This allows identification of the causal effect of PM2.5 on hospital admissions even in the presence of unmeasured confounders.
 
+**Instrument validity is verified with:**
+- First-stage F-statistic > 10 (relevance)
+- Sargan overidentification test (exogeneity, when multiple instruments available)
+
 **Analysis 3 — Heterogeneous Treatment Effects: who suffers most? (EconML / Causal Forest)**
 
 Causal Forest estimates conditional average treatment effects (CATE) by NUTS3 region, season, and age group, revealing whether the health impact of PM2.5 is larger in Eastern Europe, in winter, or among elderly populations — questions that a single average effect cannot answer.
@@ -131,7 +137,7 @@ Causal Forest estimates conditional average treatment effects (CATE) by NUTS3 re
 | **Aggregation tables** | City-level summaries: days above EU/WHO thresholds, seasonal patterns, cross-border pollution correlations |
 | **Trained ML models** | LightGBM and XGBoost classifiers predicting PM2.5 threshold exceedance at 24h (t+1) and 48h (t+2) horizons |
 | **SHAP analysis** | Interpretability report identifying which features most strongly drive pollution events by region and season |
-| **Causal estimates** | DiD coefficients, IV estimates, and CATE maps quantifying the health burden of PM2.5 exceedance events |
+| **Causal estimates** | DiD coefficients, IV estimates (with first-stage F-statistic and overidentification tests), and CATE maps quantifying the health burden of PM2.5 exceedance events |
 | **Production API** | FastAPI endpoints serving predictions and causal health impact estimates |
 | **Orchestrated pipeline** | Prefect DAG automating the full flow from ingestion to model retraining, scheduled weekly |
 | **Interactive dashboard** | Plotly Dash application showing Europe-wide PM2.5 trends, mortality burden maps, and model performance metrics |
@@ -142,15 +148,15 @@ Causal Forest estimates conditional average treatment effects (CATE) by NUTS3 re
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Prediction target | PM2.5 exceedance (binary) | Highest health impact; strong autocorrelation; actionable threshold |
+| Prediction target | PM2.5 exceedance (binary) > 25 µg/m³ (EU daily limit) | Highest health impact; strong autocorrelation; actionable threshold; WHO 15 µg/m³ sensitivity analysis available |
 | Prediction horizons | t+1 (24h) and t+2 (48h) | Operationally meaningful for health advisories and industrial planning |
 | Co-pollutants | Features, not targets | Retain NO₂, O₃, PM10, SO₂ as inputs — they encode emission and atmospheric state |
 | Meteorological source | ERA5 (Copernicus/ECMWF) | 100% European; continuous grid; superior spatial coverage over station networks |
 | Priority metric | Recall (≥ 90%) | Missing a danger event (false negative) is worse than a false alarm |
 | Class imbalance | `scale_pos_weight` in LightGBM/XGBoost | Adjusts for the fact that danger days are a minority of observations |
-| Validation strategy | Strict temporal split | Random splits cause data leakage via lag features |
+| Validation strategy | Strict temporal split | Random splits cause data leakage via lag features. Lag features (t-1, t-2) are computed using only training data within each temporal fold — no future information leaks. |
 | Decision threshold | Tuned per model | Set to achieve ≥ 90% recall on validation set, not fixed at 0.5 |
-| Causal instrument | ERA5 boundary layer height | Affects PM2.5 via thermal inversions; no direct health pathway |
+| Causal instrument | ERA5 boundary layer height | Affects PM2.5 via thermal inversions; no direct health pathway. First-stage F > 10 required; Sargan test reported. |
 | Causal heterogeneity | Causal Forest (EconML) | Estimates CATE by region, season, and age group |
 
 ---
@@ -163,7 +169,7 @@ Raw data is downloaded programmatically from the EEA Air Quality Download Servic
 
 **Phase 2 — Large-Scale Processing with Apache Spark**
 
-PySpark jobs handle cleaning, spatial joining (ERA5 grid interpolation to EEA station coordinates, replacing the Haversine nearest-neighbor approach used with NOAA point stations), and feature engineering: PM2.5 and co-pollutant lags, rolling windows, calendar features, derived meteorological indices, and health outcome joins at weekly NUTS3 granularity. Outputs are partitioned Parquet files.
+PySpark jobs handle cleaning, spatial joining (ERA5 grid interpolation to EEA station coordinates, replacing the Haversine nearest-neighbor approach used with NOAA point stations), and feature engineering: PM2.5 and co-pollutant lags, rolling windows, calendar features, derived meteorological indices, and health outcome joins at weekly NUTS3 granularity. Outputs are partitioned Parquet files. For local development, use `--engine pandas` to run without Spark.
 
 **Phase 3 — Pipeline Orchestration with Prefect**
 
@@ -171,15 +177,15 @@ All steps are wrapped in a Prefect flow with dependency management, schema valid
 
 **Phase 4 — Predictive Modeling**
 
-Binary classification (PM2.5 > 25 µg/m³ at t+1 and t+2) using LightGBM (primary), XGBoost (comparative), and Logistic Regression (interpretable baseline). Decision threshold tuned to achieve ≥ 90% recall. SHAP values provide full feature interpretability. Country-level performance breakdown identifies regional weaknesses.
+Binary classification (PM2.5 > 25 µg/m³ at t+1 and t+2) using LightGBM (primary), XGBoost (comparative), and Logistic Regression (interpretable baseline). Lag features (t-1, t-2) are computed using only training data within each temporal fold — no future information leaks. Decision threshold tuned to achieve ≥ 90% recall. SHAP values provide full feature interpretability. Country-level performance breakdown identifies regional weaknesses.
 
 **Phase 5 — Causal Inference**
 
-Three causal analyses using `linearmodels` (DiD, IV) and `econml` (Causal Forest). Analyses are implemented as standalone notebooks with full narrative documentation of assumptions, identification strategy, and robustness checks. Results feed a `/health-impact` API endpoint that returns causal mortality and hospitalization estimates alongside the predictive alert.
+Three causal analyses using `linearmodels` (DiD, IV) and `econml` (Causal Forest). IV analyses include first-stage F-statistic (> 10 required) and Sargan overidentification test where applicable. Analyses are implemented as standalone notebooks with full narrative documentation of assumptions, identification strategy, and robustness checks. Results feed a `/health-impact` API endpoint that returns causal mortality and hospitalization estimates alongside the predictive alert.
 
 **Phase 6 — Production Deploy**
 
-FastAPI application containerised with Docker (multi-stage build, non-root user). CI/CD via GitHub Actions: tests on every PR, automatic deploy to Render.com on push to main. Endpoints: `/predict`, `/predict/batch`, `/health-impact`, `/health`, `/metrics`.
+FastAPI application containerised with Docker (multi-stage build, non-root user). CI/CD via GitHub Actions: tests on every PR, automatic deploy to Render.com on push to main. Endpoints: `/predict`, `/predict/batch`, `/health-impact`, `/health`, `/metrics`. Production monitoring includes recall tracking, prediction volume, and drift detection (PSD score > 0.05 triggers alert).
 
 ---
 
@@ -190,7 +196,7 @@ FastAPI application containerised with Docker (multi-stage build, non-root user)
 | Ingestion — air quality | Python, `airbase` |
 | Ingestion — meteorology | Python, `cdsapi` (ERA5/Copernicus) |
 | Ingestion — health | Python, `eurostat` package, `requests` (WHO) |
-| Processing | Apache Spark (PySpark), `xarray` (NetCDF → Parquet) |
+| Processing | Apache Spark (PySpark), `xarray` (NetCDF → Parquet); optional `--engine pandas` flag |
 | Orchestration | Prefect |
 | Experiment tracking | MLflow — logs hyperparameters, metrics, and model artefacts for every training run |
 | Modeling | LightGBM, XGBoost, scikit-learn, SHAP |
@@ -200,6 +206,7 @@ FastAPI application containerised with Docker (multi-stage build, non-root user)
 | Containerization | Docker |
 | CI/CD | GitHub Actions |
 | Deploy | Render.com (free tier) |
+| Monitoring | Recall, precision, prediction volume, PSD drift score (alert if <0.80 recall or drift >0.05) |
 
 ---
 
@@ -211,7 +218,7 @@ A Plotly Dash application intended for exploratory analysis, internal communicat
 
 - *Europe map*: PM2.5 exceedance days by NUTS3 region with a time slider, showing where and when dangerous pollution events concentrate across the continent.
 - *Prediction panel*: observed vs predicted PM2.5 for a selected monitoring station, t+1/t+2 alert probability, and a SHAP bar chart explaining which features are driving the current prediction.
-- *Causal panel*: CATE choropleth map of health impact by region, DiD event-study plots (treated vs control regions around pollution episodes), and IV estimates with confidence intervals by country.
+- *Causal panel*: CATE choropleth map of health impact by region, DiD event-study plots (treated vs control regions around pollution episodes), and IV estimates with confidence intervals by country, including first-stage F-statistics.
 
 > A `06_results_visualization.ipynb` notebook covering static model outputs (ROC curves, calibration plots, SHAP summary plots) is planned for reproducible offline review.
 
@@ -224,8 +231,41 @@ The only production-facing surface. A FastAPI application containerised with Doc
 | `POST /predict` | PM2.5 exceedance probability at t+1 and t+2 for a single station |
 | `POST /predict/batch` | Same for multiple stations in one call |
 | `GET /health-impact` | Causal estimate of additional deaths and hospitalisations given a pollution episode |
-| `GET /metrics` | Live model performance metrics (recall, precision, prediction volume) |
+| `GET /metrics` | Live model performance metrics (recall, precision, prediction volume, drift score) |
 | `GET /health` | Service health check |
+
+**Example request for `/predict`:**
+```json
+{
+  "station_id": "FR04012",
+  "timestamp": "2024-01-15",
+  "features": {
+    "pm10_value": 45.2,
+    "no2_value": 38.1,
+    "o3_value": 52.3,
+    "so2_value": 3.4,
+    "temperature": 2.5,
+    "wind_speed": 4.1,
+    "boundary_layer_height": 320
+  }
+}
+```
+
+**Example response for `/predict`:**
+```json
+{
+  "station_id": "FR04012",
+  "timestamp": "2024-01-15",
+  "t1_exceedance_probability": 0.82,
+  "t2_exceedance_probability": 0.74,
+  "alert": true,
+  "top_features": {
+    "pm10_value_lag1": 0.31,
+    "boundary_layer_height": 0.22,
+    "pm25_value_lag1": 0.18
+  }
+}
+```
 
 ---
 
@@ -286,9 +326,10 @@ eea-era5-air-quality-europe/
 ├── tests/
 │   └── test_api.py                         # API integration tests run on every PR via GitHub Actions
 ├── models/                             # saved model artifacts (excluded from git)
+├── Makefile                            # convenience commands: make data, make train, make serve
 ├── Dockerfile                          # API production image
 ├── Dockerfile.pipeline                 # Pipeline image (Spark + Prefect)
-├── docker-compose.yml
+├── docker-compose.yml                  # Shared volume: ./data/processed:/data
 ├── prefect.yaml
 ├── requirements-ingestion.txt
 ├── requirements-spark.txt
@@ -406,7 +447,7 @@ El ámbito de cinco países alcanza el punto óptimo:
 
 **¿Por qué Spark con ~2M filas?**
 
-Con 2 millones de filas, pandas es técnicamente suficiente. Spark se mantiene por dos razones explícitas: (1) demuestra capacidades de ingeniería de datos a escala de producción, que forma parte del propósito del proyecto; y (2) el pipeline está diseñado para escalar — añadir más países o años requiere solo un cambio de configuración, no una reescritura. Reconocer esto explícitamente es más honesto intelectualmente que pretender que Spark es estrictamente necesario a esta escala.
+Con 2 millones de filas, pandas es técnicamente suficiente. Spark se mantiene por dos razones explícitas: (1) demuestra capacidades de ingeniería de datos a escala de producción, que forma parte del propósito del proyecto; y (2) el pipeline está diseñado para escalar — añadir más países o años requiere solo un cambio de configuración, no una reescritura. Está disponible el flag `--engine pandas` en todos los jobs de Spark para desarrollo local sin overhead de Spark.
 
 **¿Por qué estos países concretos?**
 
@@ -427,6 +468,8 @@ La naturaleza transfronteriza de la contaminación del aire europea — donde la
 ---
 
 ### ¿Por Qué PM2.5 como Variable Objetivo?
+
+**Definición del umbral:** La excedencia de PM2.5 se define como **> 25 µg/m³** (valor límite diario de la UE). Un análisis de sensibilidad secundario con el umbral más estricto de la OMS (15 µg/m³) está disponible en `notebooks/02_feature_validation.ipynb`.
 
 **PM2.5 como target — el caso de salud pública:**
 
@@ -457,6 +500,10 @@ Regiones que superan el umbral (tratadas) vs regiones comparables que no lo supe
 **Análisis 2 — Variables Instrumentales: PM2.5 y hospitalizaciones cardiovasculares**
 La altura de la capa límite de ERA5 actúa como instrumento: las inversiones térmicas afectan fuertemente los niveles de PM2.5 sin impactar directamente la salud cardiovascular por ninguna otra vía.
 
+**La validez del instrumento se verifica con:**
+- Estadístico F de primera etapa > 10 (relevancia)
+- Test de Sargan de sobreidentificación (exogeneidad, cuando hay múltiples instrumentos disponibles)
+
 **Análisis 3 — Efectos Heterogéneos: ¿quién sufre más? (EconML / Causal Forest)**
 Causal Forest estima efectos causales condicionales (CATE) por región NUTS3, estación y grupo de edad, revelando si el impacto sanitario del PM2.5 es mayor en Europa del Este, en invierno, o en mayores de 65 años.
 
@@ -466,14 +513,14 @@ Causal Forest estima efectos causales condicionales (CATE) por región NUTS3, es
 
 | Decisión | Elección | Justificación |
 |---|---|---|
-| Variable objetivo | Excedencia de PM2.5 (binario) | Mayor impacto sanitario; autocorrelación fuerte; umbral accionable |
+| Variable objetivo | Excedencia de PM2.5 (binario) > 25 µg/m³ (límite diario UE) | Mayor impacto sanitario; autocorrelación fuerte; umbral accionable; análisis de sensibilidad OMS 15 µg/m³ disponible |
 | Horizontes | t+1 (24h) y t+2 (48h) | Útiles para avisos sanitarios y planificación industrial |
 | Fuente meteorológica | ERA5 (Copernicus/ECMWF) | 100% europeo; grid continuo; cobertura superior a redes de estaciones |
 | Co-contaminantes | Features, no targets | NO₂, O₃, PM10, SO₂ codifican estado de emisiones y atmósfera |
 | Métrica prioritaria | Recall (≥ 90%) | Perder un evento peligroso es peor que una falsa alarma |
 | Desbalanceo de clases | `scale_pos_weight` | Ajusta por la minoría de días peligrosos |
-| Estrategia de validación | Corte temporal estricto | Los splits aleatorios causan data leakage vía lag features |
-| Instrumento causal | Altura capa límite ERA5 | Afecta PM2.5 vía inversiones térmicas; sin vía directa a salud |
+| Estrategia de validación | Corte temporal estricto | Los splits aleatorios causan data leakage vía lag features. Los lags (t-1, t-2) se calculan solo con datos de entrenamiento dentro de cada fold temporal — sin filtración de información futura. |
+| Instrumento causal | Altura capa límite ERA5 | Afecta PM2.5 vía inversiones térmicas; sin vía directa a salud. Se requiere F primera etapa > 10; se reporta test de Sargan. |
 | Heterogeneidad causal | Causal Forest (EconML) | Estima CATE por región, estación y grupo de edad |
 
 ---
@@ -485,7 +532,7 @@ Causal Forest estima efectos causales condicionales (CATE) por región NUTS3, es
 | Ingesta — calidad del aire | Python, `airbase` |
 | Ingesta — meteorología | Python, `cdsapi` (ERA5/Copernicus) |
 | Ingesta — salud | Python, `eurostat` package, `requests` (WHO) |
-| Procesamiento | Apache Spark (PySpark), `xarray` (NetCDF → Parquet) |
+| Procesamiento | Apache Spark (PySpark), `xarray` (NetCDF → Parquet); flag opcional `--engine pandas` |
 | Orquestación | Prefect |
 | Seguimiento de experimentos | MLflow — registra hiperparámetros, métricas y artefactos del modelo en cada ejecución de entrenamiento |
 | Modelado | LightGBM, XGBoost, scikit-learn, SHAP |
@@ -495,6 +542,7 @@ Causal Forest estima efectos causales condicionales (CATE) por región NUTS3, es
 | Containerización | Docker |
 | CI/CD | GitHub Actions |
 | Deploy | Render.com (free tier) |
+| Monitoreo | Recall, precisión, volumen de predicciones, puntuación de drift PSD (alerta si recall < 0,80 o drift > 0,05) |
 
 ---
 
@@ -506,7 +554,7 @@ Aplicación Plotly Dash destinada a exploración analítica, comunicación inter
 
 - *Mapa de Europa*: días de excedencia de PM2.5 por región NUTS3 con slider temporal, mostrando dónde y cuándo se concentran los episodios de contaminación peligrosa en el continente.
 - *Panel predictivo*: PM2.5 real vs predicho para una estación seleccionada, probabilidad de alerta a t+1/t+2, y gráfico SHAP de barras que explica qué features están impulsando la predicción actual.
-- *Panel causal*: mapa coropleta de CATE del impacto sanitario por región, gráficos de estudio de eventos DiD (regiones tratadas vs control alrededor de episodios de contaminación), y estimaciones IV con intervalos de confianza por país.
+- *Panel causal*: mapa coropleta de CATE del impacto sanitario por región, gráficos de estudio de eventos DiD (regiones tratadas vs control alrededor de episodios de contaminación), y estimaciones IV con intervalos de confianza por país, incluyendo estadísticos F de primera etapa.
 
 > Un notebook `06_results_visualization.ipynb` con outputs estáticos del modelo (curvas ROC, gráficos de calibración, SHAP summary plots) está planificado para revisión offline reproducible.
 
@@ -519,8 +567,41 @@ La única superficie orientada a producción. Aplicación FastAPI contenerizada 
 | `POST /predict` | Probabilidad de excedencia de PM2.5 a t+1 y t+2 para una estación |
 | `POST /predict/batch` | Lo mismo para múltiples estaciones en una sola llamada |
 | `GET /health-impact` | Estimación causal de muertes y hospitalizaciones adicionales dado un episodio de contaminación |
-| `GET /metrics` | Métricas de rendimiento del modelo en tiempo real (recall, precisión, volumen de predicciones) |
+| `GET /metrics` | Métricas de rendimiento del modelo en tiempo real (recall, precisión, volumen de predicciones, puntuación de drift) |
 | `GET /health` | Health check del servicio |
+
+**Ejemplo de petición para `/predict`:**
+```json
+{
+  "station_id": "FR04012",
+  "timestamp": "2024-01-15",
+  "features": {
+    "pm10_value": 45.2,
+    "no2_value": 38.1,
+    "o3_value": 52.3,
+    "so2_value": 3.4,
+    "temperature": 2.5,
+    "wind_speed": 4.1,
+    "boundary_layer_height": 320
+  }
+}
+```
+
+**Ejemplo de respuesta para `/predict`:**
+```json
+{
+  "station_id": "FR04012",
+  "timestamp": "2024-01-15",
+  "t1_exceedance_probability": 0.82,
+  "t2_exceedance_probability": 0.74,
+  "alert": true,
+  "top_features": {
+    "pm10_value_lag1": 0.31,
+    "boundary_layer_height": 0.22,
+    "pm25_value_lag1": 0.18
+  }
+}
+```
 
 ---
 
@@ -545,7 +626,7 @@ Los datos se descargan de forma programática desde el servicio de descarga de c
 
 **Fase 2 — Procesamiento a Gran Escala con Apache Spark**
 
-Los jobs de PySpark gestionan la limpieza, la unión espacial (interpolación del grid ERA5 a las coordenadas de las estaciones EEA) y la ingeniería de features: lags de PM2.5 y co-contaminantes, ventanas móviles, variables de calendario, índices meteorológicos derivados, y uniones con datos de salud a granularidad semanal NUTS3. Las salidas son archivos Parquet particionados.
+Los jobs de PySpark gestionan la limpieza, la unión espacial (interpolación del grid ERA5 a las coordenadas de las estaciones EEA) y la ingeniería de features: lags de PM2.5 y co-contaminantes, ventanas móviles, variables de calendario, índices meteorológicos derivados, y uniones con datos de salud a granularidad semanal NUTS3. Las salidas son archivos Parquet particionados. Para desarrollo local, usa `--engine pandas` para ejecutar sin Spark.
 
 **Fase 3 — Orquestación del Pipeline con Prefect**
 
@@ -553,15 +634,15 @@ Todos los pasos están encapsulados en un flow de Prefect con gestión de depend
 
 **Fase 4 — Modelado Predictivo**
 
-Clasificación binaria (PM2.5 > 25 µg/m³ en t+1 y t+2) usando LightGBM (modelo principal), XGBoost (comparativo) y Regresión Logística (baseline interpretable). El umbral de decisión se ajusta para alcanzar un recall ≥ 90%. Los valores SHAP proporcionan interpretabilidad completa de las features. Un desglose del rendimiento por país identifica debilidades regionales.
+Clasificación binaria (PM2.5 > 25 µg/m³ en t+1 y t+2) usando LightGBM (modelo principal), XGBoost (comparativo) y Regresión Logística (baseline interpretable). Los lags (t-1, t-2) se calculan usando solo datos de entrenamiento dentro de cada fold temporal — sin filtración de información futura. El umbral de decisión se ajusta para alcanzar un recall ≥ 90%. Los valores SHAP proporcionan interpretabilidad completa de las features. Un desglose del rendimiento por país identifica debilidades regionales.
 
 **Fase 5 — Inferencia Causal**
 
-Tres análisis causales usando `linearmodels` (DiD, IV) y `econml` (Causal Forest). Los análisis se implementan como notebooks independientes con documentación narrativa completa de supuestos, estrategia de identificación y verificaciones de robustez. Los resultados alimentan un endpoint `/health-impact` de la API que devuelve estimaciones causales de mortalidad y hospitalización junto con la alerta predictiva.
+Tres análisis causales usando `linearmodels` (DiD, IV) y `econml` (Causal Forest). Los análisis de VI incluyen el estadístico F de primera etapa (se requiere > 10) y el test de sobreidentificación de Sargan cuando aplica. Los análisis se implementan como notebooks independientes con documentación narrativa completa de supuestos, estrategia de identificación y verificaciones de robustez. Los resultados alimentan un endpoint `/health-impact` de la API que devuelve estimaciones causales de mortalidad y hospitalización junto con la alerta predictiva.
 
 **Fase 6 — Despliegue en Producción**
 
-Aplicación FastAPI contenerizada con Docker (build multi-stage, usuario no-root). CI/CD mediante GitHub Actions: tests en cada PR, despliegue automático a Render.com en cada push a main. Endpoints: `/predict`, `/predict/batch`, `/health-impact`, `/health`, `/metrics`.
+Aplicación FastAPI contenerizada con Docker (build multi-stage, usuario no-root). CI/CD mediante GitHub Actions: tests en cada PR, despliegue automático a Render.com en cada push a main. Endpoints: `/predict`, `/predict/batch`, `/health-impact`, `/health`, `/metrics`. El monitoreo en producción incluye seguimiento de recall, volumen de predicciones y detección de drift (puntuación PSD > 0,05 activa alerta).
 
 ---
 
@@ -622,9 +703,10 @@ eea-era5-air-quality-europe/
 ├── tests/
 │   └── test_api.py                         # tests de integración de la API, ejecutados en cada PR via GitHub Actions
 ├── models/                             # artefactos del modelo guardados (excluidos de git)
+├── Makefile                            # comandos convenientes: make data, make train, make serve
 ├── Dockerfile                          # imagen de producción para la API
 ├── Dockerfile.pipeline                 # imagen del pipeline (Spark + Prefect)
-├── docker-compose.yml
+├── docker-compose.yml                  # Volumen compartido: ./data/processed:/data
 ├── prefect.yaml
 ├── requirements-ingestion.txt
 ├── requirements-spark.txt
@@ -690,3 +772,5 @@ python dashboard/app.py
 ---
 
 *Project by — open to contributions and feedback.*
+
+
